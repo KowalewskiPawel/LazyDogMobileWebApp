@@ -19,28 +19,23 @@ function setupCanvas() {
   canvas.height = videoElement.height;
 }
 
-// Load PoseNet model
-async function loadPoseNet() {
+// Load MoveNet model
+async function loadMoveNet() {
   try {
-    updateStatus('Loading PoseNet model...');
-    state.net = await posenet.load({
-      architecture: 'MobileNetV1',
-      outputStride: 16,
-      inputResolution: { width: 640, height: 480 },
-      multiplier: 0.75
-    });
-    updateStatus('PoseNet model loaded successfully', false);
+    updateStatus('Loading MoveNet model...');
+    state.net = await tf.loadGraphModel('https://tfhub.dev/google/tfjs-model/movenet/singlepose/lightning/4', {fromTFHub: true});
+    updateStatus('MoveNet model loaded successfully', false);
     startButton.disabled = false;
   } catch (error) {
-    console.error('Error loading PoseNet model:', error);
-    updateStatus('Failed to load PoseNet model: ' + error.message, true);
+    console.error('Error loading MoveNet model:', error);
+    updateStatus('Failed to load MoveNet model: ' + error.message, true);
   }
 }
 
 // Start pose detection
 function startPoseDetection() {
   if (!state.net) {
-    updateStatus('PoseNet model not loaded yet', true);
+    updateStatus('MoveNet model not loaded yet', true);
     return;
   }
 
@@ -48,7 +43,6 @@ function startPoseDetection() {
   startButton.disabled = true;
   stopButton.disabled = false;
   updateStatus('Pose detection running...');
-  
   detectPoseInRealTime();
 }
 
@@ -77,143 +71,70 @@ async function detectPoseInRealTime() {
   if (!state.isRunning) return;
 
   const ctx = canvas.getContext('2d');
-  
-  try {
-    // Make sure canvas is sized correctly
-    if (canvas.width !== videoElement.width || canvas.height !== videoElement.height) {
-      canvas.width = videoElement.width;
-      canvas.height = videoElement.height;
-    }
-    
-    // Clear the canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Draw the image to canvas
-    ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-    
-    // Estimate pose
-    const pose = await state.net.estimateSinglePose(canvas, {
-      flipHorizontal: false
-    });
-    
-    // If we have a pose with good confidence, draw it
-    if (pose.score > 0.2) {
-      drawPose(pose, ctx);
-    }
-    
-    // Continue detection loop
-    requestAnimationFrame(detectPoseInRealTime);
-  } catch (error) {
-    console.error('Pose detection error:', error);
-    updateStatus('Error during pose detection: ' + error.message, true);
-    
-    // Try to restart detection after a brief pause
-    setTimeout(() => {
-      if (state.isRunning) {
-        detectPoseInRealTime();
-      }
-    }, 1000);
-  }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+  // Preprocess the image
+  const inputTensor = tf.browser.fromPixels(canvas)
+    .resizeBilinear([192, 192])
+    .expandDims(0)
+    .toInt(); // Convert to int32
+
+  // Run the model
+  const result = await state.net.executeAsync(inputTensor);
+  const keypoints = result.arraySync()[0][0];
+  inputTensor.dispose();
+
+  drawPose(keypoints, ctx);
+  requestAnimationFrame(detectPoseInRealTime);
 }
 
 // Draw the detected pose
-function drawPose(pose, ctx) {
-  const { keypoints, score } = pose;
-  
-  // Only draw keypoints with reasonable confidence
-  const confidenceThreshold = 0.5;
-  
-  // Draw keypoints
-  keypoints.forEach((keypoint) => {
-    if (keypoint.score >= confidenceThreshold) {
-      const { x, y } = keypoint.position;
-      
-      // Draw a circle at the keypoint
+function drawPose(keypoints, ctx) {
+  if (!keypoints || !state.showSkeleton) return;
+
+  ctx.fillStyle = 'red';
+  ctx.strokeStyle = 'lime';
+  ctx.lineWidth = 2;
+
+  keypoints.forEach(keypoint => {
+    const [y, x, score] = keypoint;
+    if (score > 0.3) {
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, 2 * Math.PI);
-      ctx.fillStyle = 'red';
+      ctx.arc(x * canvas.width, y * canvas.height, 5, 0, 2 * Math.PI);
       ctx.fill();
     }
   });
-  
-  // Draw skeleton if enabled
-  if (state.showSkeleton) {
-    // Define the connected keypoint pairs for the skeleton
-    const connectedParts = [
-      ['nose', 'leftEye'], ['leftEye', 'leftEar'],
-      ['nose', 'rightEye'], ['rightEye', 'rightEar'],
-      ['leftShoulder', 'rightShoulder'],
-      ['leftShoulder', 'leftElbow'], ['leftElbow', 'leftWrist'],
-      ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightWrist'],
-      ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip'],
-      ['leftHip', 'rightHip'],
-      ['leftHip', 'leftKnee'], ['leftKnee', 'leftAnkle'],
-      ['rightHip', 'rightKnee'], ['rightKnee', 'rightAnkle']
-    ];
-    
-    // Draw lines between connected keypoints
-    ctx.strokeStyle = 'lime';
-    ctx.lineWidth = 2;
-    
-    connectedParts.forEach(([partA, partB]) => {
-      const keypointA = keypoints.find(kp => kp.part === partA);
-      const keypointB = keypoints.find(kp => kp.part === partB);
-      
-      if (keypointA && keypointB &&
-          keypointA.score >= confidenceThreshold &&
-          keypointB.score >= confidenceThreshold) {
-        ctx.beginPath();
-        ctx.moveTo(keypointA.position.x, keypointA.position.y);
-        ctx.lineTo(keypointB.position.x, keypointB.position.y);
-        ctx.stroke();
-      }
-    });
-  }
-  
-  // Display overall pose confidence
-  ctx.fillStyle = 'white';
-  ctx.strokeStyle = 'black';
-  ctx.lineWidth = 1;
-  ctx.font = '16px Arial';
-  ctx.fillText(`Confidence: ${Math.round(score * 100)}%`, 10, 20);
-  ctx.strokeText(`Confidence: ${Math.round(score * 100)}%`, 10, 20);
-}
 
-// Handle image load errors
-function handleImageError() {
-  updateStatus('Error loading camera feed. Check if the Raspberry Pi is accessible.', true);
-  
-  // Try to reload the image with a new timestamp to avoid caching
-  setTimeout(() => {
-    videoElement.src = '/video_feed?' + new Date().getTime();
-  }, 5000); // Retry after 5 seconds
-}
+  // Draw skeleton connections
+  const adjacentKeyPoints = [
+    [0, 1], [1, 3], [3, 5], [0, 2], [2, 4], [4, 6],
+    [5, 7], [7, 9], [6, 8], [8, 10], [5, 6],
+    [5, 11], [6, 12], [11, 12], [11, 13], [13, 15],
+    [12, 14], [14, 16]
+  ];
 
-// Set up event listeners
-function setupEventListeners() {
-  // Image load event
-  videoElement.onload = () => {
-    updateStatus('Camera connected successfully');
-    setupCanvas();
-  };
-  
-  // Image error event
-  videoElement.onerror = handleImageError;
-  
-  // Button events
-  startButton.addEventListener('click', startPoseDetection);
-  stopButton.addEventListener('click', stopPoseDetection);
-  toggleSkeletonButton.addEventListener('click', toggleSkeleton);
+  adjacentKeyPoints.forEach(([i, j]) => {
+    const [y1, x1, score1] = keypoints[i];
+    const [y2, x2, score2] = keypoints[j];
+    if (score1 > 0.3 && score2 > 0.3) {
+      ctx.beginPath();
+      ctx.moveTo(x1 * canvas.width, y1 * canvas.height);
+      ctx.lineTo(x2 * canvas.width, y2 * canvas.height);
+      ctx.stroke();
+    }
+  });
 }
 
 // Initialize the application
 async function initialize() {
-  // Set up event listeners
-  setupEventListeners();
-  
-  // Load PoseNet model
-  await loadPoseNet();
+  setupCanvas();
+  await loadMoveNet();
 }
 
-// Start initialization when page is loaded
 window.addEventListener('DOMContentLoaded', initialize);
+
+// Set up event listeners
+startButton.addEventListener('click', startPoseDetection);
+stopButton.addEventListener('click', stopPoseDetection);
+toggleSkeletonButton.addEventListener('click', toggleSkeleton);
