@@ -7,7 +7,7 @@ const app = express();
 
 // Configuration
 const config = {
-  robotIp: '', // Replace with your Raspberry Pi's IP
+  robotIp: '192.168.2.3', // Replace with your Raspberry Pi's IP
   robotPort: 5000
 };
 
