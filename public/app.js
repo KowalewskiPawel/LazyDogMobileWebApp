@@ -56,18 +56,18 @@ const poseReferences = {
       ]
     },
     side: {
-      // Keypoint relationships for plank pose from side view
+      // Keypoint relationships for plank pose from side view - calibrated with user provided reference
       alignment: [
-        { parts: ['right_shoulder', 'right_hip', 'right_ankle'], tolerance: 0.1 },
-        { parts: ['left_shoulder', 'left_hip', 'left_ankle'], tolerance: 0.1 }
+        { parts: ['right_shoulder', 'right_hip', 'right_ankle'], tolerance: 0.25 }, // Increased tolerance significantly
+        { parts: ['left_shoulder', 'left_hip', 'left_ankle'], tolerance: 0.25 }  // Increased tolerance significantly
       ],
       angles: [
-        { joint: 'right_shoulder', limbs: ['right_elbow', 'right_hip'], target: 90, tolerance: 15 },
-        { joint: 'left_shoulder', limbs: ['left_elbow', 'left_hip'], target: 90, tolerance: 15 },
-        { joint: 'right_elbow', limbs: ['right_shoulder', 'right_wrist'], target: 180, tolerance: 20 },
-        { joint: 'left_elbow', limbs: ['left_shoulder', 'left_wrist'], target: 180, tolerance: 20 },
-        { joint: 'right_hip', limbs: ['right_shoulder', 'right_knee'], target: 180, tolerance: 20 },
-        { joint: 'right_knee', limbs: ['right_hip', 'right_ankle'], target: 180, tolerance: 15 }
+        { joint: 'right_shoulder', limbs: ['right_elbow', 'right_hip'], target: 85, tolerance: 30 }, // Adjusted target and increased tolerance
+        { joint: 'left_shoulder', limbs: ['left_elbow', 'left_hip'], target: 85, tolerance: 30 }, // Adjusted target and increased tolerance
+        { joint: 'right_elbow', limbs: ['right_shoulder', 'right_wrist'], target: 160, tolerance: 35 }, // Adjusted target and tolerance
+        { joint: 'left_elbow', limbs: ['left_shoulder', 'left_wrist'], target: 160, tolerance: 35 }, // Adjusted target and tolerance
+        { joint: 'right_hip', limbs: ['right_shoulder', 'right_knee'], target: 165, tolerance: 30 }, // Adjusted target and increased tolerance
+        { joint: 'right_knee', limbs: ['right_hip', 'right_ankle'], target: 170, tolerance: 30 } // Adjusted target and increased tolerance
       ]
     }
   },
@@ -419,6 +419,12 @@ function calculateAngle(pointA, pointB, pointC) {
 function checkAlignment(points, tolerance) {
   if (points.length < 3) return true; // Need at least 3 points
   
+  // For plank side view, use a more sophisticated alignment check that's less sensitive
+  // to small variations
+  if (state.selectedExercise === 'plank' && state.viewAngle === 'side') {
+    return checkAlignmentForPlankSideView(points, tolerance);
+  }
+  
   // Calculate slopes between consecutive points
   const slopes = [];
   for (let i = 0; i < points.length - 1; i++) {
@@ -440,6 +446,55 @@ function checkAlignment(points, tolerance) {
   }
   
   return true;
+}
+
+// Special alignment check for plank side view which is more tolerant of small deviations
+function checkAlignmentForPlankSideView(points, tolerance) {
+  // Use linear regression to find best fit line
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  const n = points.length;
+  
+  // Calculate sums for linear regression
+  for (let i = 0; i < n; i++) {
+    sumX += points[i].x;
+    sumY += points[i].y;
+    sumXY += points[i].x * points[i].y;
+    sumX2 += points[i].x * points[i].x;
+  }
+  
+  // Calculate slope and y-intercept of best-fit line (y = mx + b)
+  const avgX = sumX / n;
+  const avgY = sumY / n;
+  
+  // Check if points are approximately vertical
+  if (Math.max(...points.map(p => p.x)) - Math.min(...points.map(p => p.x)) < 0.1) {
+    // For vertical lines, check if x values are close enough
+    const avgX = sumX / n;
+    return points.every(p => Math.abs(p.x - avgX) < tolerance);
+  }
+  
+  // Otherwise calculate linear regression
+  const slope = (sumXY - sumX * avgY) / (sumX2 - sumX * avgX);
+  const intercept = avgY - slope * avgX;
+  
+  // Calculate how well points fit this line
+  let deviationSum = 0;
+  for (let i = 0; i < n; i++) {
+    const expectedY = slope * points[i].x + intercept;
+    const deviation = Math.abs(points[i].y - expectedY);
+    deviationSum += deviation;
+  }
+  
+  // Calculate average deviation and check if it's within tolerance
+  // Allow for a slight upward curve in the body line which is common in proper planks
+  const avgDeviation = deviationSum / n;
+  
+  // If the regression line is somewhat diagonal (as expected in side plank)
+  // we can be more forgiving with the alignment
+  const isDiagonal = Math.abs(slope) > 0.2 && Math.abs(slope) < 2.0;
+  const adjustedTolerance = isDiagonal ? tolerance * 1.5 : tolerance;
+  
+  return avgDeviation <= adjustedTolerance;
 }
 
 // Extract keypoints in usable format
@@ -496,10 +551,17 @@ function validatePose(rawKeypoints) {
     });
     
     // Only check alignment if all required points are detected
-    if (allPointsDetected) {
+    // and there are enough points (at least 3) for a meaningful alignment check
+    if (allPointsDetected && points.length >= 3) {
       const isAligned = checkAlignment(points, alignCheck.tolerance);
       
-      if (!isAligned) {
+      // Special relaxed check for plank side view since camera angle can affect alignment
+      const isPlankSideView = exercise === 'plank' && viewAngle === 'side';
+      const shouldMarkError = !isAligned && (!isPlankSideView || 
+                              // For plank side view, only report severe misalignments
+                              (isPlankSideView && !checkAlignment(points, alignCheck.tolerance * 1.5)));
+      
+      if (shouldMarkError) {
         detectedErrors.isCorrect = false;
         alignCheck.parts.forEach(part => {
           if (!detectedErrors.incorrectParts.includes(part)) {
