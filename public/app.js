@@ -3,10 +3,17 @@ const state = {
   net: null,
   isRunning: false,
   showSkeleton: true,
-  frameCount: 0,        // Track frame count
-  processEveryNFrames: 3, // Process every N frames (adjust as needed)
-  lastKeypoints: null,   // Store last detected keypoints
-  lastImageData: null    // Store last image data for snapshot
+  frameCount: 0,
+  processEveryNFrames: 3,
+  lastKeypoints: null,
+  lastImageData: null,
+  selectedExercise: 'plank', // Default exercise
+  viewAngle: 'side', // 'side' or 'front'
+  poseCorrectness: {
+    isCorrect: false,
+    feedback: [],
+    incorrectParts: []
+  }
 };
 
 // DOM elements
@@ -17,12 +24,103 @@ const stopButton = document.getElementById('stopButton');
 const toggleSkeletonButton = document.getElementById('toggleSkeletonButton');
 const snapshotButton = document.getElementById('snapshotButton') || document.createElement('button');
 const statusMessage = document.getElementById('statusMessage');
-const fpsCounter = document.getElementById('fpsCounter') || document.createElement('div'); // Optional FPS counter
+const fpsCounter = document.getElementById('fpsCounter') || document.createElement('div');
+const feedbackElement = document.createElement('div');
 
 // FPS calculation variables
 let frameTimestamps = [];
 let lastCalculatedFps = 0;
 let lastProcessedFrameTime = 0;
+
+// Reference poses for validation
+const poseReferences = {
+  plank: {
+    front: {
+      // Keypoint relationships for plank pose from front view
+      alignment: [
+        { parts: ['left_shoulder', 'left_hip', 'left_ankle'], tolerance: 0.1 },
+        { parts: ['right_shoulder', 'right_hip', 'right_ankle'], tolerance: 0.1 }
+      ],
+      angles: [
+        { joint: 'left_shoulder', limbs: ['left_elbow', 'left_hip'], target: 90, tolerance: 15 },
+        { joint: 'right_shoulder', limbs: ['right_elbow', 'right_hip'], target: 90, tolerance: 15 },
+        { joint: 'left_elbow', limbs: ['left_shoulder', 'left_wrist'], target: 180, tolerance: 20 },
+        { joint: 'right_elbow', limbs: ['right_shoulder', 'right_wrist'], target: 180, tolerance: 20 }
+      ]
+    },
+    side: {
+      // Keypoint relationships for plank pose from side view
+      alignment: [
+        { parts: ['right_shoulder', 'right_hip', 'right_ankle'], tolerance: 0.1 },
+        { parts: ['left_shoulder', 'left_hip', 'left_ankle'], tolerance: 0.1 }
+      ],
+      angles: [
+        { joint: 'right_shoulder', limbs: ['right_elbow', 'right_hip'], target: 90, tolerance: 15 },
+        { joint: 'left_shoulder', limbs: ['left_elbow', 'left_hip'], target: 90, tolerance: 15 },
+        { joint: 'right_elbow', limbs: ['right_shoulder', 'right_wrist'], target: 180, tolerance: 20 },
+        { joint: 'left_elbow', limbs: ['left_shoulder', 'left_wrist'], target: 180, tolerance: 20 },
+        { joint: 'right_hip', limbs: ['right_shoulder', 'right_knee'], target: 180, tolerance: 20 },
+        { joint: 'right_knee', limbs: ['right_hip', 'right_ankle'], target: 180, tolerance: 15 }
+      ]
+    }
+  },
+  chaturanga: {
+    front: {
+      // Keypoint relationships for chaturanga pose from front view
+      alignment: [
+        { parts: ['left_shoulder', 'left_hip', 'left_ankle'], tolerance: 0.12 },
+        { parts: ['right_shoulder', 'right_hip', 'right_ankle'], tolerance: 0.12 }
+      ],
+      angles: [
+        { joint: 'left_shoulder', limbs: ['left_elbow', 'left_hip'], target: 90, tolerance: 15 },
+        { joint: 'right_shoulder', limbs: ['right_elbow', 'right_hip'], target: 90, tolerance: 15 },
+        { joint: 'left_elbow', limbs: ['left_shoulder', 'left_wrist'], target: 90, tolerance: 20 },
+        { joint: 'right_elbow', limbs: ['right_shoulder', 'right_wrist'], target: 90, tolerance: 20 }
+      ]
+    },
+    side: {
+      // Keypoint relationships for chaturanga pose from side view
+      alignment: [
+        { parts: ['right_shoulder', 'right_hip', 'right_ankle'], tolerance: 0.12 },
+        { parts: ['left_shoulder', 'left_hip', 'left_ankle'], tolerance: 0.12 }
+      ],
+      angles: [
+        { joint: 'right_shoulder', limbs: ['right_elbow', 'right_hip'], target: 90, tolerance: 15 },
+        { joint: 'left_shoulder', limbs: ['left_elbow', 'left_hip'], target: 90, tolerance: 15 },
+        { joint: 'right_elbow', limbs: ['right_shoulder', 'right_wrist'], target: 90, tolerance: 20 },
+        { joint: 'left_elbow', limbs: ['left_shoulder', 'left_wrist'], target: 90, tolerance: 20 },
+        { joint: 'right_hip', limbs: ['right_shoulder', 'right_knee'], target: 180, tolerance: 20 },
+        { joint: 'right_knee', limbs: ['right_hip', 'right_ankle'], target: 180, tolerance: 15 }
+      ]
+    }
+  }
+};
+
+// Feedback messages for pose corrections
+const correctionMessages = {
+  plank: {
+    'left_shoulder': 'Align your left shoulder directly above your elbow',
+    'right_shoulder': 'Align your right shoulder directly above your elbow',
+    'left_elbow': 'Straighten your left arm',
+    'right_elbow': 'Straighten your right arm',
+    'left_hip': 'Lift your hips to create a straight line from head to heels',
+    'right_hip': 'Lift your hips to create a straight line from head to heels',
+    'left_knee': 'Straighten your left leg',
+    'right_knee': 'Straighten your right leg',
+    'general': 'Engage your core and maintain a straight line from head to heels'
+  },
+  chaturanga: {
+    'left_shoulder': 'Lower your shoulders to elbow height',
+    'right_shoulder': 'Lower your shoulders to elbow height',
+    'left_elbow': 'Bend your left elbow to 90 degrees',
+    'right_elbow': 'Bend your right elbow to 90 degrees',
+    'left_hip': 'Maintain a straight line from head to heels',
+    'right_hip': 'Maintain a straight line from head to heels',
+    'left_knee': 'Keep your left leg straight',
+    'right_knee': 'Keep your right leg straight',
+    'general': 'Lower your body to hover above the ground with elbows at 90 degrees'
+  }
+};
 
 // Initialize canvas to match video dimensions
 function setupCanvas() {
@@ -42,6 +140,21 @@ function setupCanvas() {
     fpsCounter.style.borderRadius = '3px';
     document.body.appendChild(fpsCounter);
   }
+  
+  // Add feedback element
+  feedbackElement.id = 'poseCorrections';
+  feedbackElement.className = 'feedback-panel';
+  feedbackElement.style.position = 'absolute';
+  feedbackElement.style.left = '10px';
+  feedbackElement.style.bottom = '10px';
+  feedbackElement.style.width = '300px';
+  feedbackElement.style.background = 'rgba(0,0,0,0.7)';
+  feedbackElement.style.color = 'white';
+  feedbackElement.style.padding = '10px';
+  feedbackElement.style.borderRadius = '5px';
+  feedbackElement.style.maxHeight = '200px';
+  feedbackElement.style.overflowY = 'auto';
+  document.body.appendChild(feedbackElement);
 }
 
 // Load MoveNet model
@@ -68,7 +181,7 @@ function startPoseDetection() {
   state.frameCount = 0;
   startButton.disabled = true;
   stopButton.disabled = false;
-  updateStatus('Pose detection running...');
+  updateStatus(`Pose detection running for ${state.selectedExercise}...`);
   detectPoseInRealTime();
 }
 
@@ -138,7 +251,6 @@ async function detectPoseInRealTime() {
     lastProcessedFrameTime = now;
     
     // Skip this frame if we're processing frames too quickly
-    // This adds another layer of throttling if needed
     if (timeSinceLastProcess < 16.67) { // < 60 FPS
       requestAnimationFrame(detectPoseInRealTime);
       return;
@@ -155,6 +267,11 @@ async function detectPoseInRealTime() {
       // Run the model
       const result = await state.net.executeAsync(inputTensor);
       state.lastKeypoints = result.arraySync()[0][0];
+      
+      // Validate pose
+      if (state.lastKeypoints) {
+        validatePose(state.lastKeypoints);
+      }
     } catch (error) {
       console.error('Error during pose detection:', error);
     } finally {
@@ -165,6 +282,7 @@ async function detectPoseInRealTime() {
   // Draw the latest pose (even on frames we don't process)
   if (state.lastKeypoints) {
     drawPose(state.lastKeypoints, ctx);
+    updateFeedback();
   }
   
   requestAnimationFrame(detectPoseInRealTime);
@@ -174,10 +292,6 @@ async function detectPoseInRealTime() {
 function drawPose(keypoints, ctx) {
   if (!keypoints || !state.showSkeleton) return;
 
-  ctx.fillStyle = 'red';
-  ctx.strokeStyle = 'lime';
-  ctx.lineWidth = 2;
-
   // Define keypoint names for reference
   const keypointNames = [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
@@ -186,11 +300,30 @@ function drawPose(keypoints, ctx) {
     "left_knee", "right_knee", "left_ankle", "right_ankle"
   ];
 
+  // Create a map of keypoint names to their data for easier reference
+  const keypointsMap = {};
+  keypoints.forEach((keypoint, i) => {
+    keypointsMap[keypointNames[i]] = {
+      y: keypoint[0],
+      x: keypoint[1],
+      score: keypoint[2],
+      index: i
+    };
+  });
+
+  // Draw keypoints
   keypoints.forEach((keypoint, i) => {
     const [y, x, score] = keypoint;
+    const name = keypointNames[i];
     if (score > 0.3) {
       const pixelX = x * canvas.width;
       const pixelY = y * canvas.height;
+      
+      // Check if this part is incorrect and should be highlighted
+      const isIncorrect = state.poseCorrectness.incorrectParts.includes(name);
+      
+      // Set color based on correctness
+      ctx.fillStyle = isIncorrect ? 'red' : 'lime';
       
       // Draw keypoint
       ctx.beginPath();
@@ -201,8 +334,7 @@ function drawPose(keypoints, ctx) {
       if (state.showLabels) {
         ctx.fillStyle = 'white';
         ctx.font = '12px Arial';
-        ctx.fillText(keypointNames[i], pixelX + 10, pixelY);
-        ctx.fillStyle = 'red'; // Reset for the next point
+        ctx.fillText(name, pixelX + 10, pixelY);
       }
     }
   });
@@ -218,13 +350,232 @@ function drawPose(keypoints, ctx) {
   adjacentKeyPoints.forEach(([i, j]) => {
     const [y1, x1, score1] = keypoints[i];
     const [y2, x2, score2] = keypoints[j];
+    const name1 = keypointNames[i];
+    const name2 = keypointNames[j];
+    
     if (score1 > 0.2 && score2 > 0.2) {
+      // Check if either endpoint is incorrect
+      const isIncorrect = state.poseCorrectness.incorrectParts.includes(name1) || 
+                         state.poseCorrectness.incorrectParts.includes(name2);
+      
+      // Set color based on correctness
+      ctx.strokeStyle = isIncorrect ? 'red' : 'lime';
+      ctx.lineWidth = 2;
+      
       ctx.beginPath();
       ctx.moveTo(x1 * canvas.width, y1 * canvas.height);
       ctx.lineTo(x2 * canvas.width, y2 * canvas.height);
       ctx.stroke();
     }
   });
+  
+  // Draw exercise name and viewing angle
+  ctx.fillStyle = 'white';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText(`Exercise: ${state.selectedExercise.toUpperCase()} (${state.viewAngle} view)`, 10, 30);
+  
+  // Draw overall pose status
+  ctx.font = 'bold 20px Arial';
+  ctx.fillStyle = state.poseCorrectness.isCorrect ? 'lime' : 'red';
+  ctx.fillText(state.poseCorrectness.isCorrect ? 'CORRECT POSE ✓' : 'INCORRECT POSE ✗', 10, 60);
+}
+
+// Calculate angle between three points (in degrees)
+function calculateAngle(pointA, pointB, pointC) {
+  // Vector BA
+  const BA = {
+    x: pointA.x - pointB.x,
+    y: pointA.y - pointB.y
+  };
+  
+  // Vector BC
+  const BC = {
+    x: pointC.x - pointB.x,
+    y: pointC.y - pointB.y
+  };
+  
+  // Dot product
+  const dotProduct = BA.x * BC.x + BA.y * BC.y;
+  
+  // Magnitudes
+  const magBA = Math.sqrt(BA.x * BA.x + BA.y * BA.y);
+  const magBC = Math.sqrt(BC.x * BC.x + BC.y * BC.y);
+  
+  // Angle in radians
+  const angleRad = Math.acos(dotProduct / (magBA * magBC));
+  
+  // Convert to degrees
+  return angleRad * (180 / Math.PI);
+}
+
+// Check if points are in a straight line (alignment)
+function checkAlignment(points, tolerance) {
+  if (points.length < 3) return true; // Need at least 3 points
+  
+  // Calculate slopes between consecutive points
+  const slopes = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i+1].x - points[i].x;
+    // Avoid division by zero
+    if (Math.abs(dx) < 0.001) {
+      slopes.push(999999); // Vertical line
+    } else {
+      slopes.push((points[i+1].y - points[i].y) / dx);
+    }
+  }
+  
+  // Check if all slopes are approximately equal
+  const firstSlope = slopes[0];
+  for (let i = 1; i < slopes.length; i++) {
+    if (Math.abs(slopes[i] - firstSlope) > tolerance) {
+      return false;
+    }
+  }
+  
+  return true;
+}
+
+// Extract keypoints in usable format
+function extractKeypoints(rawKeypoints) {
+  const keypointNames = [
+    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist", "left_hip", "right_hip",
+    "left_knee", "right_knee", "left_ankle", "right_ankle"
+  ];
+  
+  const keypoints = {};
+  
+  rawKeypoints.forEach((keypoint, index) => {
+    const [y, x, score] = keypoint;
+    keypoints[keypointNames[index]] = {
+      x: x,
+      y: y,
+      score: score
+    };
+  });
+  
+  return keypoints;
+}
+
+// Validate pose against reference
+function validatePose(rawKeypoints) {
+  const keypoints = extractKeypoints(rawKeypoints);
+  const exercise = state.selectedExercise;
+  const viewAngle = state.viewAngle;
+  
+  const reference = poseReferences[exercise][viewAngle];
+  const incorrectParts = [];
+  const feedback = [];
+  let isCorrect = true;
+  
+  // Minimum confidence threshold for keypoints
+  const confidenceThreshold = 0.3;
+  
+  // Check alignments
+  reference.alignment.forEach(alignCheck => {
+    const points = [];
+    let allPointsDetected = true;
+    
+    // Extract points for alignment check
+    alignCheck.parts.forEach(part => {
+      if (keypoints[part] && keypoints[part].score > confidenceThreshold) {
+        points.push(keypoints[part]);
+      } else {
+        allPointsDetected = false;
+      }
+    });
+    
+    // Only check alignment if all required points are detected
+    if (allPointsDetected) {
+      const isAligned = checkAlignment(points, alignCheck.tolerance);
+      
+      if (!isAligned) {
+        isCorrect = false;
+        alignCheck.parts.forEach(part => {
+          if (!incorrectParts.includes(part)) {
+            incorrectParts.push(part);
+          }
+        });
+        
+        // Add general alignment feedback
+        feedback.push(correctionMessages[exercise].general);
+      }
+    }
+  });
+  
+  // Check angles
+  reference.angles.forEach(angleCheck => {
+    const { joint, limbs, target, tolerance } = angleCheck;
+    
+    // Make sure all required keypoints are detected with sufficient confidence
+    if (keypoints[joint] && keypoints[joint].score > confidenceThreshold &&
+        keypoints[limbs[0]] && keypoints[limbs[0]].score > confidenceThreshold &&
+        keypoints[limbs[1]] && keypoints[limbs[1]].score > confidenceThreshold) {
+        
+      const angle = calculateAngle(keypoints[limbs[0]], keypoints[joint], keypoints[limbs[1]]);
+      const angleError = Math.abs(angle - target);
+      
+      if (angleError > tolerance) {
+        isCorrect = false;
+        
+        if (!incorrectParts.includes(joint)) {
+          incorrectParts.push(joint);
+        }
+        
+        // Add specific joint feedback
+        if (correctionMessages[exercise][joint] && !feedback.includes(correctionMessages[exercise][joint])) {
+          feedback.push(correctionMessages[exercise][joint]);
+        }
+      }
+    }
+  });
+  
+  // Update state with pose correctness
+  state.poseCorrectness = {
+    isCorrect: isCorrect,
+    incorrectParts: incorrectParts,
+    feedback: feedback
+  };
+}
+
+// Update feedback element with pose corrections
+function updateFeedback() {
+  // Clear previous feedback
+  feedbackElement.innerHTML = '';
+  
+  if (state.poseCorrectness.feedback.length > 0) {
+    // Create title
+    const title = document.createElement('h3');
+    title.style.margin = '0 0 10px 0';
+    title.style.color = 'red';
+    title.textContent = 'Pose Corrections:';
+    feedbackElement.appendChild(title);
+    
+    // Create list of corrections
+    const list = document.createElement('ul');
+    list.style.margin = '0';
+    list.style.paddingLeft = '20px';
+    
+    state.poseCorrectness.feedback.forEach(message => {
+      if (!message) return;
+      
+      const item = document.createElement('li');
+      item.textContent = message;
+      item.style.marginBottom = '5px';
+      list.appendChild(item);
+    });
+    
+    feedbackElement.appendChild(list);
+  } else if (state.poseCorrectness.isCorrect) {
+    // Show positive feedback
+    const perfectMessage = document.createElement('p');
+    perfectMessage.style.color = 'lime';
+    perfectMessage.style.fontWeight = 'bold';
+    perfectMessage.style.margin = '0';
+    perfectMessage.textContent = '✓ Perfect! Maintain this pose.';
+    feedbackElement.appendChild(perfectMessage);
+  }
 }
 
 // Configuration slider for frame processing rate
@@ -233,40 +584,92 @@ function addConfigControls() {
   controlsDiv.className = 'config-controls';
   controlsDiv.style.margin = '10px 0';
   
-  const label = document.createElement('label');
-  label.textContent = 'Process every N frames: ';
-  label.style.marginRight = '10px';
+  // Frame rate control
+  const frameRateLabel = document.createElement('label');
+  frameRateLabel.textContent = 'Process every N frames: ';
+  frameRateLabel.style.marginRight = '10px';
   
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = '1';
-  slider.max = '10';
-  slider.value = state.processEveryNFrames;
-  slider.style.verticalAlign = 'middle';
+  const frameRateSlider = document.createElement('input');
+  frameRateSlider.type = 'range';
+  frameRateSlider.min = '1';
+  frameRateSlider.max = '10';
+  frameRateSlider.value = state.processEveryNFrames;
+  frameRateSlider.style.verticalAlign = 'middle';
   
-  const valueDisplay = document.createElement('span');
-  valueDisplay.textContent = state.processEveryNFrames;
-  valueDisplay.style.marginLeft = '10px';
+  const frameRateDisplay = document.createElement('span');
+  frameRateDisplay.textContent = state.processEveryNFrames;
+  frameRateDisplay.style.marginLeft = '10px';
+  frameRateDisplay.style.marginRight = '20px';
   
-  slider.addEventListener('input', () => {
-    state.processEveryNFrames = parseInt(slider.value);
-    valueDisplay.textContent = state.processEveryNFrames;
+  frameRateSlider.addEventListener('input', () => {
+    state.processEveryNFrames = parseInt(frameRateSlider.value);
+    frameRateDisplay.textContent = state.processEveryNFrames;
   });
   
-  controlsDiv.appendChild(label);
-  controlsDiv.appendChild(slider);
-  controlsDiv.appendChild(valueDisplay);
+  controlsDiv.appendChild(frameRateLabel);
+  controlsDiv.appendChild(frameRateSlider);
+  controlsDiv.appendChild(frameRateDisplay);
+  
+  // Exercise selection
+  const exerciseLabel = document.createElement('label');
+  exerciseLabel.textContent = 'Exercise: ';
+  exerciseLabel.style.marginRight = '10px';
+  
+  const exerciseSelect = document.createElement('select');
+  exerciseSelect.style.padding = '5px';
+  exerciseSelect.style.marginRight = '20px';
+  
+  const plankOption = document.createElement('option');
+  plankOption.value = 'plank';
+  plankOption.textContent = 'Plank';
+  
+  const chaturangaOption = document.createElement('option');
+  chaturangaOption.value = 'chaturanga';
+  chaturangaOption.textContent = 'Chaturanga';
+  
+  exerciseSelect.appendChild(plankOption);
+  exerciseSelect.appendChild(chaturangaOption);
+  exerciseSelect.value = state.selectedExercise;
+  
+  exerciseSelect.addEventListener('change', () => {
+    state.selectedExercise = exerciseSelect.value;
+    updateStatus(`Selected exercise: ${state.selectedExercise.toUpperCase()}`);
+  });
+  
+  controlsDiv.appendChild(exerciseLabel);
+  controlsDiv.appendChild(exerciseSelect);
+  
+  // View angle selection
+  const viewLabel = document.createElement('label');
+  viewLabel.textContent = 'View: ';
+  viewLabel.style.marginRight = '10px';
+  
+  const viewSelect = document.createElement('select');
+  viewSelect.style.padding = '5px';
+  
+  const sideOption = document.createElement('option');
+  sideOption.value = 'side';
+  sideOption.textContent = 'Side View';
+  
+  const frontOption = document.createElement('option');
+  frontOption.value = 'front';
+  frontOption.textContent = 'Front View';
+  
+  viewSelect.appendChild(sideOption);
+  viewSelect.appendChild(frontOption);
+  viewSelect.value = state.viewAngle;
+  
+  viewSelect.addEventListener('change', () => {
+    state.viewAngle = viewSelect.value;
+    updateStatus(`Selected view: ${state.viewAngle}`);
+  });
+  
+  controlsDiv.appendChild(viewLabel);
+  controlsDiv.appendChild(viewSelect);
   
   // Insert after the existing controls
   const buttonsContainer = startButton.parentNode;
   buttonsContainer.parentNode.insertBefore(controlsDiv, buttonsContainer.nextSibling);
-}
-
-// Initialize the application
-async function initialize() {
-  setupCanvas();
-  addConfigControls();
-  await loadMoveNet();
 }
 
 // Function to take and save a snapshot
@@ -290,6 +693,9 @@ function takeSnapshot() {
       timestamp: new Date().toISOString(),
       imageWidth: canvas.width,
       imageHeight: canvas.height,
+      exercise: state.selectedExercise,
+      viewAngle: state.viewAngle,
+      isCorrect: state.poseCorrectness.isCorrect,
       keypoints: state.lastKeypoints.map((keypoint, i) => {
         const [y, x, score] = keypoint;
         return {
@@ -299,13 +705,14 @@ function takeSnapshot() {
             y: Math.round(y * canvas.height)
           },
           score: score,
-          // Add normalized coordinates (0-1 range)
           normalized: {
             x: x,
             y: y
-          }
+          },
+          isCorrect: !state.poseCorrectness.incorrectParts.includes(keypointNames[i])
         };
-      })
+      }),
+      feedback: state.poseCorrectness.feedback
     };
     
     // Convert to JSON string
@@ -318,12 +725,12 @@ function takeSnapshot() {
     // Create a download link
     const downloadLink = document.createElement('a');
     downloadLink.href = url;
-    downloadLink.download = `pose-snapshot-${new Date().getTime()}.json`;
+    downloadLink.download = `${state.selectedExercise}-${state.viewAngle}-${state.poseCorrectness.isCorrect ? 'good' : 'bad'}-${new Date().getTime()}.json`;
     document.body.appendChild(downloadLink);
     downloadLink.click();
     document.body.removeChild(downloadLink);
     
-    // Optionally also save the image if canvas is accessible
+    // Also save the image with the skeleton
     if (state.lastImageData) {
       const snapshotCanvas = document.createElement('canvas');
       snapshotCanvas.width = canvas.width;
@@ -341,7 +748,7 @@ function takeSnapshot() {
         const imgUrl = URL.createObjectURL(blob);
         const imgLink = document.createElement('a');
         imgLink.href = imgUrl;
-        imgLink.download = `pose-snapshot-${new Date().getTime()}.png`;
+        imgLink.download = `${state.selectedExercise}-${state.viewAngle}-${state.poseCorrectness.isCorrect ? 'good' : 'bad'}-${new Date().getTime()}.png`;
         document.body.appendChild(imgLink);
         imgLink.click();
         document.body.removeChild(imgLink);
@@ -398,21 +805,68 @@ function setupLabelToggleButton() {
   }
 }
 
-// Update initialize function to include new UI elements
+// Add styles for the app
+function addStyles() {
+  const style = document.createElement('style');
+  style.textContent = `
+    .button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background-color 0.3s;
+    }
+    .button:hover {
+      opacity: 0.9;
+    }
+    .button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #startButton {
+      background-color: #4CAF50;
+      color: white;
+    }
+    #stopButton {
+      background-color: #f44336;
+      color: white;
+    }
+    .config-controls {
+      margin: 15px 0;
+      padding: 15px;
+      background-color: #f5f5f5;
+      border-radius: 5px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .feedback-panel h3 {
+      margin-top: 0;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+// Initialize the application
 function initialize() {
   setupCanvas();
   addConfigControls();
   setupSnapshotButton();
   setupLabelToggleButton();
+  addStyles();
   loadMoveNet();
   
   // Initialize state
   state.showLabels = false;
+  
+  // Update status with initial exercise selection
+  updateStatus(`Ready to detect ${state.selectedExercise.toUpperCase()} pose (${state.viewAngle} view)`);
 }
 
-window.addEventListener('DOMContentLoaded', initialize);
-
 // Set up event listeners
+window.addEventListener('DOMContentLoaded', initialize);
 startButton.addEventListener('click', startPoseDetection);
 stopButton.addEventListener('click', stopPoseDetection);
 toggleSkeletonButton.addEventListener('click', toggleSkeleton);
