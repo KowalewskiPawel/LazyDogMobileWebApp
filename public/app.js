@@ -13,6 +13,13 @@ const state = {
     isCorrect: false,
     feedback: [],
     incorrectParts: []
+  },
+  // Temporal smoothing for error detection
+  errorPersistence: {
+    duration: 2000, // milliseconds to persist error before showing
+    errors: {}, // Map of bodyPart -> {startTime, count, active}
+    activeFeedback: [], // Currently displayed feedback messages
+    lastUpdateTime: 0
   }
 };
 
@@ -458,16 +465,18 @@ function extractKeypoints(rawKeypoints) {
   return keypoints;
 }
 
-// Validate pose against reference
+// Validate pose against reference with temporal smoothing
 function validatePose(rawKeypoints) {
   const keypoints = extractKeypoints(rawKeypoints);
   const exercise = state.selectedExercise;
   const viewAngle = state.viewAngle;
   
   const reference = poseReferences[exercise][viewAngle];
-  const incorrectParts = [];
-  const feedback = [];
-  let isCorrect = true;
+  const detectedErrors = { // Current frame errors
+    incorrectParts: [],
+    feedback: [],
+    isCorrect: true
+  };
   
   // Minimum confidence threshold for keypoints
   const confidenceThreshold = 0.3;
@@ -491,15 +500,18 @@ function validatePose(rawKeypoints) {
       const isAligned = checkAlignment(points, alignCheck.tolerance);
       
       if (!isAligned) {
-        isCorrect = false;
+        detectedErrors.isCorrect = false;
         alignCheck.parts.forEach(part => {
-          if (!incorrectParts.includes(part)) {
-            incorrectParts.push(part);
+          if (!detectedErrors.incorrectParts.includes(part)) {
+            detectedErrors.incorrectParts.push(part);
           }
         });
         
         // Add general alignment feedback
-        feedback.push(correctionMessages[exercise].general);
+        const generalMessage = correctionMessages[exercise].general;
+        if (!detectedErrors.feedback.includes(generalMessage)) {
+          detectedErrors.feedback.push(generalMessage);
+        }
       }
     }
   });
@@ -517,26 +529,91 @@ function validatePose(rawKeypoints) {
       const angleError = Math.abs(angle - target);
       
       if (angleError > tolerance) {
-        isCorrect = false;
+        detectedErrors.isCorrect = false;
         
-        if (!incorrectParts.includes(joint)) {
-          incorrectParts.push(joint);
+        if (!detectedErrors.incorrectParts.includes(joint)) {
+          detectedErrors.incorrectParts.push(joint);
         }
         
         // Add specific joint feedback
-        if (correctionMessages[exercise][joint] && !feedback.includes(correctionMessages[exercise][joint])) {
-          feedback.push(correctionMessages[exercise][joint]);
+        if (correctionMessages[exercise][joint] && 
+            !detectedErrors.feedback.includes(correctionMessages[exercise][joint])) {
+          detectedErrors.feedback.push(correctionMessages[exercise][joint]);
         }
       }
     }
   });
   
-  // Update state with pose correctness
+  // Process temporal smoothing of errors
+  processErrorsOverTime(detectedErrors);
+}
+
+// Process errors over time to reduce noise
+function processErrorsOverTime(currentDetectedErrors) {
+  const now = performance.now();
+  const { errors } = state.errorPersistence;
+  const persistenceDuration = state.errorPersistence.duration;
+  
+  // Reset parts that are no longer detected as incorrect
+  Object.keys(errors).forEach(part => {
+    if (!currentDetectedErrors.incorrectParts.includes(part)) {
+      delete errors[part];
+    }
+  });
+  
+  // Update or add parts that are currently detected as incorrect
+  currentDetectedErrors.incorrectParts.forEach(part => {
+    if (!errors[part]) {
+      // Initialize new error tracking
+      errors[part] = {
+        startTime: now,
+        count: 1,
+        active: false
+      };
+    } else {
+      // Update existing error tracking
+      errors[part].count++;
+      
+      // Mark as active if it has persisted for the required duration
+      if (!errors[part].active && now - errors[part].startTime >= persistenceDuration) {
+        errors[part].active = true;
+      }
+    }
+  });
+  
+  // Build active incorrect parts list and feedback
+  const activeIncorrectParts = [];
+  const activeFeedback = [];
+  
+  Object.keys(errors).forEach(part => {
+    if (errors[part].active) {
+      activeIncorrectParts.push(part);
+      
+      // Add corresponding feedback message if available
+      const exercise = state.selectedExercise;
+      if (correctionMessages[exercise][part] && 
+          !activeFeedback.includes(correctionMessages[exercise][part])) {
+        activeFeedback.push(correctionMessages[exercise][part]);
+      }
+    }
+  });
+  
+  // Add general feedback if there are active errors
+  if (activeIncorrectParts.length > 0 && 
+      !activeFeedback.includes(correctionMessages[state.selectedExercise].general)) {
+    activeFeedback.push(correctionMessages[state.selectedExercise].general);
+  }
+  
+  // Update state with persistent pose correctness
   state.poseCorrectness = {
-    isCorrect: isCorrect,
-    incorrectParts: incorrectParts,
-    feedback: feedback
+    isCorrect: activeIncorrectParts.length === 0,
+    incorrectParts: activeIncorrectParts,
+    feedback: activeFeedback
   };
+  
+  // Store active feedback for reference
+  state.errorPersistence.activeFeedback = activeFeedback;
+  state.errorPersistence.lastUpdateTime = now;
 }
 
 // Update feedback element with pose corrections
@@ -609,6 +686,38 @@ function addConfigControls() {
   controlsDiv.appendChild(frameRateLabel);
   controlsDiv.appendChild(frameRateSlider);
   controlsDiv.appendChild(frameRateDisplay);
+  
+  // Error persistence duration control
+  const errorPersistenceLabel = document.createElement('label');
+  errorPersistenceLabel.textContent = 'Error persistence (seconds): ';
+  errorPersistenceLabel.style.marginRight = '10px';
+  
+  const errorPersistenceSlider = document.createElement('input');
+  errorPersistenceSlider.type = 'range';
+  errorPersistenceSlider.min = '1';
+  errorPersistenceSlider.max = '5';
+  errorPersistenceSlider.step = '0.5';
+  errorPersistenceSlider.value = state.errorPersistence.duration / 1000; // Convert ms to seconds
+  errorPersistenceSlider.style.verticalAlign = 'middle';
+  
+  const errorPersistenceDisplay = document.createElement('span');
+  errorPersistenceDisplay.textContent = state.errorPersistence.duration / 1000;
+  errorPersistenceDisplay.style.marginLeft = '10px';
+  errorPersistenceDisplay.style.marginRight = '20px';
+  
+  errorPersistenceSlider.addEventListener('input', () => {
+    const seconds = parseFloat(errorPersistenceSlider.value);
+    state.errorPersistence.duration = seconds * 1000; // Convert to ms
+    errorPersistenceDisplay.textContent = seconds;
+    
+    // Reset all currently tracked errors when changing the persistence time
+    state.errorPersistence.errors = {};
+  });
+  
+  controlsDiv.appendChild(document.createElement('br'));
+  controlsDiv.appendChild(errorPersistenceLabel);
+  controlsDiv.appendChild(errorPersistenceSlider);
+  controlsDiv.appendChild(errorPersistenceDisplay);
   
   // Exercise selection
   const exerciseLabel = document.createElement('label');
