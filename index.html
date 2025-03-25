@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LazyDog Pose Detection</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>LazyDog Pose Detection</h1>
+    
+    <div class="video-container">
+      <!-- Using img tag instead of video for better MJPEG compatibility -->
+      <img id="videoElement" src="/video_feed" alt="Camera Feed">
+      <canvas id="canvas"></canvas>
+    </div>
+    
+    <div class="controls">
+      <button id="startButton">Start Pose Detection</button>
+      <button id="stopButton" disabled>Stop Pose Detection</button>
+      <button id="toggleSkeletonButton">Hide Skeleton</button>
+      <button id="snapshotButton">Take Snapshot</button>
+    </div>
+    
+    <div id="statusMessage" class="status">Connecting to camera...</div>
+    
+    <!-- Voice feedback status indicator -->
+    <div class="voice-status status-inactive" id="voiceFeedbackStatus">
+      <span class="voice-indicator"></span>
+      <span>Voice Feedback: Inactive</span>
+    </div>
+    
+    <!-- Voice feedback controls -->
+    <div class="voice-feedback-controls">
+      <button id="enableVoiceButton">Enable Voice Feedback</button>
+      <button id="disableVoiceButton">Disable Voice Feedback</button>
+    </div>
+  </div>
+  
+  <!-- Use modern ES modules -->
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

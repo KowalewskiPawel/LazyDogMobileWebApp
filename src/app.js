@@ -1,3 +1,7 @@
+// Main application logic for pose detection
+import * as tf from '@tensorflow/tfjs';
+import voiceFeedback from './voice-feedback.js';
+
 // State management
 const state = {
   net: null,
@@ -20,19 +24,28 @@ const state = {
     errors: {}, // Map of bodyPart -> {startTime, count, active}
     activeFeedback: [], // Currently displayed feedback messages
     lastUpdateTime: 0
+  },
+  // Voice feedback settings
+  voiceFeedback: {
+    enabled: true,
+    lastFeedbackTime: 0,
+    cooldownPeriod: 10000 // 10 seconds between voice feedbacks
   }
 };
 
 // DOM elements
-const videoElement = document.getElementById('videoElement');
-const canvas = document.getElementById('canvas');
-const startButton = document.getElementById('startButton');
-const stopButton = document.getElementById('stopButton');
-const toggleSkeletonButton = document.getElementById('toggleSkeletonButton');
-const snapshotButton = document.getElementById('snapshotButton') || document.createElement('button');
-const statusMessage = document.getElementById('statusMessage');
-const fpsCounter = document.getElementById('fpsCounter') || document.createElement('div');
-const feedbackElement = document.createElement('div');
+let videoElement;
+let canvas;
+let startButton;
+let stopButton;
+let toggleSkeletonButton;
+let snapshotButton;
+let statusMessage;
+let enableVoiceButton;
+let disableVoiceButton;
+let voiceFeedbackStatus;
+let fpsCounter;
+let feedbackElement;
 
 // FPS calculation variables
 let frameTimestamps = [];
@@ -136,6 +149,7 @@ function setupCanvas() {
   
   // Add FPS counter if it doesn't exist
   if (!document.getElementById('fpsCounter')) {
+    fpsCounter = document.createElement('div');
     fpsCounter.id = 'fpsCounter';
     fpsCounter.className = 'status fps';
     fpsCounter.style.position = 'absolute';
@@ -149,6 +163,7 @@ function setupCanvas() {
   }
   
   // Add feedback element
+  feedbackElement = document.createElement('div');
   feedbackElement.id = 'poseCorrections';
   feedbackElement.className = 'feedback-panel';
   feedbackElement.style.position = 'absolute';
@@ -198,12 +213,38 @@ function stopPoseDetection() {
   startButton.disabled = false;
   stopButton.disabled = true;
   updateStatus('Pose detection stopped');
+  
+  // If voice feedback is active, end the session
+  if (voiceFeedback.isActive) {
+    voiceFeedback.endSession();
+  }
 }
 
 // Toggle skeleton display
 function toggleSkeleton() {
   state.showSkeleton = !state.showSkeleton;
   toggleSkeletonButton.textContent = state.showSkeleton ? 'Hide Skeleton' : 'Show Skeleton';
+}
+
+// Enable voice feedback
+function enableVoiceFeedback() {
+  state.voiceFeedback.enabled = true;
+  enableVoiceButton.disabled = true;
+  disableVoiceButton.disabled = false;
+  updateStatus('Voice feedback enabled');
+}
+
+// Disable voice feedback
+function disableVoiceFeedback() {
+  state.voiceFeedback.enabled = false;
+  enableVoiceButton.disabled = false;
+  disableVoiceButton.disabled = true;
+  updateStatus('Voice feedback disabled');
+  
+  // If voice feedback is active, end the session
+  if (voiceFeedback.isActive) {
+    voiceFeedback.endSession();
+  }
 }
 
 // Update status message
@@ -666,6 +707,12 @@ function processErrorsOverTime(currentDetectedErrors) {
     activeFeedback.push(correctionMessages[state.selectedExercise].general);
   }
   
+  // Check if feedback has changed since last time
+  const previousFeedback = state.poseCorrectness.feedback;
+  const hasFeedbackChanged = 
+    activeFeedback.length !== previousFeedback.length || 
+    activeFeedback.some(msg => !previousFeedback.includes(msg));
+  
   // Update state with persistent pose correctness
   state.poseCorrectness = {
     isCorrect: activeIncorrectParts.length === 0,
@@ -673,9 +720,30 @@ function processErrorsOverTime(currentDetectedErrors) {
     feedback: activeFeedback
   };
   
+  // Check if we need to trigger voice feedback
+  if (state.voiceFeedback.enabled && activeFeedback.length > 0 && hasFeedbackChanged) {
+    triggerVoiceFeedback(activeIncorrectParts, activeFeedback);
+  }
+  
   // Store active feedback for reference
   state.errorPersistence.activeFeedback = activeFeedback;
   state.errorPersistence.lastUpdateTime = now;
+}
+
+// Trigger voice feedback for detected errors
+function triggerVoiceFeedback(incorrectParts, feedback) {
+  // Only send feedback if there are actual errors to report
+  if (feedback.length === 0) return;
+  
+  // Create feedback data for the voice agent
+  const feedbackData = {
+    exercise: state.selectedExercise,
+    incorrectParts: incorrectParts,
+    feedback: feedback
+  };
+  
+  // Queue feedback for voice delivery
+  voiceFeedback.queueFeedback(feedbackData);
 }
 
 // Update feedback element with pose corrections
@@ -805,6 +873,14 @@ function addConfigControls() {
   exerciseSelect.addEventListener('change', () => {
     state.selectedExercise = exerciseSelect.value;
     updateStatus(`Selected exercise: ${state.selectedExercise.toUpperCase()}`);
+    
+    // Reset error tracking when changing exercises
+    state.errorPersistence.errors = {};
+    
+    // End any active voice feedback
+    if (voiceFeedback.isActive) {
+      voiceFeedback.endSession();
+    }
   });
   
   controlsDiv.appendChild(exerciseLabel);
@@ -833,6 +909,14 @@ function addConfigControls() {
   viewSelect.addEventListener('change', () => {
     state.viewAngle = viewSelect.value;
     updateStatus(`Selected view: ${state.viewAngle}`);
+    
+    // Reset error tracking when changing view
+    state.errorPersistence.errors = {};
+    
+    // End any active voice feedback
+    if (voiceFeedback.isActive) {
+      voiceFeedback.endSession();
+    }
   });
   
   controlsDiv.appendChild(viewLabel);
@@ -936,18 +1020,9 @@ function takeSnapshot() {
 // Add snapshot button if it doesn't exist
 function setupSnapshotButton() {
   if (!document.getElementById('snapshotButton')) {
-    snapshotButton.id = 'snapshotButton';
-    snapshotButton.textContent = 'Take Snapshot';
-    snapshotButton.className = 'button';
-    snapshotButton.style.backgroundColor = '#4CAF50';
-    snapshotButton.style.marginLeft = '10px';
-    
-    // Add it after the existing buttons
-    const buttonsContainer = startButton.parentNode;
-    buttonsContainer.appendChild(snapshotButton);
+    snapshotButton = document.getElementById('snapshotButton');
+    snapshotButton.addEventListener('click', takeSnapshot);
   }
-  
-  snapshotButton.addEventListener('click', takeSnapshot);
 }
 
 // Toggle keypoint labels
@@ -962,6 +1037,8 @@ function toggleLabels() {
 
 // Add label toggle button
 function setupLabelToggleButton() {
+  const buttonsContainer = startButton.parentNode;
+
   if (!document.getElementById('toggleLabelsButton')) {
     const labelButton = document.createElement('button');
     labelButton.id = 'toggleLabelsButton';
@@ -969,75 +1046,50 @@ function setupLabelToggleButton() {
     labelButton.className = 'button';
     labelButton.style.marginLeft = '10px';
     
-    const buttonsContainer = startButton.parentNode;
     buttonsContainer.appendChild(labelButton);
     
     labelButton.addEventListener('click', toggleLabels);
   }
 }
 
-// Add styles for the app
-function addStyles() {
-  const style = document.createElement('style');
-  style.textContent = `
-    .button {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-weight: bold;
-      transition: background-color 0.3s;
-    }
-    .button:hover {
-      opacity: 0.9;
-    }
-    .button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-    #startButton {
-      background-color: #4CAF50;
-      color: white;
-    }
-    #stopButton {
-      background-color: #f44336;
-      color: white;
-    }
-    .config-controls {
-      margin: 15px 0;
-      padding: 15px;
-      background-color: #f5f5f5;
-      border-radius: 5px;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px;
-    }
-    .feedback-panel h3 {
-      margin-top: 0;
-    }
-  `;
-  document.head.appendChild(style);
-}
-
 // Initialize the application
-function initialize() {
+function initApp() {
+  // Get references to DOM elements
+  videoElement = document.getElementById('videoElement');
+  canvas = document.getElementById('canvas');
+  startButton = document.getElementById('startButton');
+  stopButton = document.getElementById('stopButton');
+  toggleSkeletonButton = document.getElementById('toggleSkeletonButton');
+  snapshotButton = document.getElementById('snapshotButton');
+  statusMessage = document.getElementById('statusMessage');
+  enableVoiceButton = document.getElementById('enableVoiceButton');
+  disableVoiceButton = document.getElementById('disableVoiceButton');
+  voiceFeedbackStatus = document.getElementById('voiceFeedbackStatus');
+
   setupCanvas();
   addConfigControls();
   setupSnapshotButton();
   setupLabelToggleButton();
-  addStyles();
   loadMoveNet();
   
   // Initialize state
   state.showLabels = false;
   
+  // Set up voice feedback buttons
+  enableVoiceButton.addEventListener('click', enableVoiceFeedback);
+  disableVoiceButton.addEventListener('click', disableVoiceFeedback);
+  
+  // Start with voice feedback enabled
+  enableVoiceFeedback();
+  
+  // Set up main button event listeners
+  startButton.addEventListener('click', startPoseDetection);
+  stopButton.addEventListener('click', stopPoseDetection);
+  toggleSkeletonButton.addEventListener('click', toggleSkeleton);
+  
   // Update status with initial exercise selection
   updateStatus(`Ready to detect ${state.selectedExercise.toUpperCase()} pose (${state.viewAngle} view)`);
 }
 
-// Set up event listeners
-window.addEventListener('DOMContentLoaded', initialize);
-startButton.addEventListener('click', startPoseDetection);
-stopButton.addEventListener('click', stopPoseDetection);
-toggleSkeletonButton.addEventListener('click', toggleSkeleton);
+// Export for main.js
+export { initApp };

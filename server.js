@@ -1,18 +1,30 @@
-const express = require('express');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
+import express from 'express';
+import http from 'http';
+import cors from 'cors';
+import { fileURLToPath } from 'url';
+import path from 'path';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
 // Configuration
 const config = {
-  robotIp: '192.168.2.3', // Replace with your Raspberry Pi's IP
-  robotPort: 5000
+  robotIp: process.env.ROBOT_IP || '192.168.2.3', // Replace with your Raspberry Pi's IP
+  robotPort: process.env.ROBOT_PORT || 5000
 };
 
-// Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Serve static files from the dist directory in production
+app.use(express.static(path.join(__dirname, '../dist')));
 
 // Create a proxy route for video feed
 app.get('/video_feed', async (req, res) => {
@@ -80,9 +92,9 @@ app.get('/video_feed', async (req, res) => {
   }
 });
 
-// Root route
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// Serve the Vite-built frontend for any other route
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../dist/index.html'));
 });
 
 // Start HTTP server
